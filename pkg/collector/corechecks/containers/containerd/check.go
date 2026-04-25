@@ -26,6 +26,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/collector/check"
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks"
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks/containers/generic"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/metrics/servicecheck"
 	cutil "github.com/DataDog/datadog-agent/pkg/util/containerd"
 	"github.com/DataDog/datadog-agent/pkg/util/containers/metrics"
@@ -38,7 +39,6 @@ const (
 	// CheckName is the name of the check
 	CheckName           = "containerd"
 	pullImageGrpcMethod = "PullImage"
-	cacheValidity       = 2 * time.Second
 
 	imageSizeQueryInterval = 10 * time.Minute
 	imageCreateEvent       = "/images/create"
@@ -61,6 +61,7 @@ type ContainerdCheck struct {
 	pauseFilter     workloadfilter.FilterBundle
 	store           workloadmeta.Component
 	tagger          tagger.Component
+	cacheValidity   time.Duration
 }
 
 // ContainerdConfig contains the custom options and configurations set by the user.
@@ -108,6 +109,7 @@ func (c *ContainerdCheck) Configure(senderManager sender.SenderManager, _ uint64
 	c.httpClient = http.Client{Timeout: time.Duration(1) * time.Second}
 	c.processor = generic.NewProcessor(metrics.GetProvider(option.New(c.store)), generic.NewMetadataContainerAccessor(c.store), metricsAdapter{}, getProcessorFilter(c.containerFilter, c.store), c.tagger, false)
 	c.processor.RegisterExtension("containerd-custom-metrics", &containerdCustomMetricsExtension{})
+	c.cacheValidity = pkgconfigsetup.Datadog().GetDuration("container_stats_cache_validity")
 	c.subscriber = createEventSubscriber("ContainerdCheck", c.client, cutil.FiltersWithNamespaces(c.instance.ContainerdFilters), c.pauseFilter)
 
 	c.subscriber.isCacheConfigValid = c.isEventConfigValid()
@@ -156,7 +158,7 @@ func (c *ContainerdCheck) Run() error {
 }
 
 func (c *ContainerdCheck) runProcessor(sender sender.Sender) error {
-	return c.processor.Run(sender, cacheValidity)
+	return c.processor.Run(sender, c.cacheValidity)
 }
 
 func (c *ContainerdCheck) runContainerdCustom(sender sender.Sender) error {

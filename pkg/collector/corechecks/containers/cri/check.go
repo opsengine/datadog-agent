@@ -21,6 +21,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/collector/check"
 	core "github.com/DataDog/datadog-agent/pkg/collector/corechecks"
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks/containers/generic"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/util/containers/cri"
 	"github.com/DataDog/datadog-agent/pkg/util/containers/metrics"
 	"github.com/DataDog/datadog-agent/pkg/util/kubernetes"
@@ -28,9 +29,8 @@ import (
 )
 
 const (
-	// CheckName is the name of the check// CheckName
-	CheckName     = "cri"
-	cacheValidity = 2 * time.Second
+	// CheckName is the name of the check
+	CheckName = "cri"
 )
 
 // CRIConfig holds the config of the check
@@ -41,11 +41,12 @@ type CRIConfig struct {
 // CRICheck grabs CRI metrics
 type CRICheck struct {
 	core.CheckBase
-	instance    *CRIConfig
-	processor   generic.Processor
-	filterStore workloadfilter.Component
-	store       workloadmeta.Component
-	tagger      tagger.Component
+	instance      *CRIConfig
+	processor     generic.Processor
+	filterStore   workloadfilter.Component
+	store         workloadmeta.Component
+	tagger        tagger.Component
+	cacheValidity time.Duration
 }
 
 // Factory is exported for integration testing
@@ -81,6 +82,7 @@ func (c *CRICheck) Configure(senderManager sender.SenderManager, _ uint64, confi
 	}
 
 	c.processor = generic.NewProcessor(metrics.GetProvider(option.New(c.store)), generic.NewMetadataContainerAccessor(c.store), metricsAdapter{}, getProcessorFilter(c.filterStore.GetContainerSharedMetricFilters(), c.store), c.tagger, false)
+	c.cacheValidity = pkgconfigsetup.Datadog().GetDuration("container_stats_cache_validity")
 	if c.instance.CollectDisk {
 		c.processor.RegisterExtension("cri-custom-metrics", &criCustomMetricsExtension{criGetter: func() (cri.CRIClient, error) {
 			return cri.GetUtil()
@@ -102,7 +104,7 @@ func (c *CRICheck) Run() error {
 }
 
 func (c *CRICheck) runProcessor(sender sender.Sender) error {
-	return c.processor.Run(sender, cacheValidity)
+	return c.processor.Run(sender, c.cacheValidity)
 }
 
 func getProcessorFilter(filterBundle workloadfilter.FilterBundle, store workloadmeta.Component) generic.ContainerFilter {

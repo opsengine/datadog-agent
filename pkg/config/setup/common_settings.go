@@ -1417,6 +1417,7 @@ func containerSyspath(config pkgconfigmodel.Setup) {
 	config.BindEnvAndSetDefault("container_proc_root", containerProcRootDefault)
 	config.BindEnvAndSetDefault("container_cgroup_root", containerCgroupRootDefault)
 	config.BindEnvAndSetDefault("container_pid_mapper", "")
+	config.BindEnvAndSetDefault("container_stats_cache_validity", 2*time.Second)
 
 	config.BindEnvAndSetDefault("ignore_host_etc", false)
 	config.BindEnvAndSetDefault("use_improved_cgroup_parser", false)

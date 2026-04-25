@@ -30,6 +30,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/collector/check"
 	core "github.com/DataDog/datadog-agent/pkg/collector/corechecks"
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks/containers/generic"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/metrics/event"
 	"github.com/DataDog/datadog-agent/pkg/metrics/servicecheck"
 	"github.com/DataDog/datadog-agent/pkg/util/containers/metrics"
@@ -42,8 +43,6 @@ import (
 const (
 	// CheckName is the name of the check
 	CheckName = "docker"
-
-	cacheValidity = 2 * time.Second
 )
 
 type eventTransformer interface {
@@ -68,6 +67,7 @@ type DockerCheck struct {
 	store                       workloadmeta.Component
 	containerFilter             workloadfilter.FilterBundle
 	tagger                      tagger.Component
+	cacheValidity               time.Duration
 
 	lastEventTime    time.Time
 	eventTransformer eventTransformer
@@ -134,6 +134,7 @@ func (d *DockerCheck) Configure(senderManager sender.SenderManager, _ uint64, co
 	d.processor.RegisterExtension("docker-custom-metrics", &dockerCustomMetricsExtension{})
 	d.configureNetworkProcessor(&d.processor)
 	d.setOkExitCodes()
+	d.cacheValidity = pkgconfigsetup.Datadog().GetDuration("container_stats_cache_validity")
 
 	return nil
 }
@@ -187,7 +188,7 @@ func (d *DockerCheck) Run() error {
 }
 
 func (d *DockerCheck) runProcessor(sender sender.Sender) error {
-	return d.processor.Run(sender, cacheValidity)
+	return d.processor.Run(sender, d.cacheValidity)
 }
 
 // containersPerTags is a counter of running and stopped containers that share the same set of tags

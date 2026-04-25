@@ -18,14 +18,14 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/aggregator/sender"
 	"github.com/DataDog/datadog-agent/pkg/collector/check"
 	core "github.com/DataDog/datadog-agent/pkg/collector/corechecks"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/util/containers/metrics"
 	"github.com/DataDog/datadog-agent/pkg/util/option"
 )
 
 const (
 	// CheckName is the name of the check
-	CheckName     = "container"
-	cacheValidity = 2 * time.Second
+	CheckName = "container"
 )
 
 // ContainerConfig holds the check configuration
@@ -41,11 +41,12 @@ func (c *ContainerConfig) Parse(data []byte) error {
 // ContainerCheck generates metrics for all containers
 type ContainerCheck struct {
 	core.CheckBase
-	instance    *ContainerConfig
-	processor   Processor
-	store       workloadmeta.Component
-	filterStore workloadfilter.Component
-	tagger      tagger.Component
+	instance      *ContainerConfig
+	processor     Processor
+	store         workloadmeta.Component
+	filterStore   workloadfilter.Component
+	tagger        tagger.Component
+	cacheValidity time.Duration
 }
 
 // Factory returns a new check factory
@@ -74,6 +75,7 @@ func (c *ContainerCheck) Configure(senderManager sender.SenderManager, _ uint64,
 	}
 
 	c.processor = NewProcessor(metrics.GetProvider(option.New(c.store)), NewMetadataContainerAccessor(c.store), GenericMetricsAdapter{}, LegacyContainerFilter{ContainerFilter: c.filterStore.GetContainerSharedMetricFilters(), Store: c.store}, c.tagger, c.instance.ExtendedMemoryMetrics)
+	c.cacheValidity = pkgconfigsetup.Datadog().GetDuration("container_stats_cache_validity")
 	return nil
 }
 
@@ -84,5 +86,5 @@ func (c *ContainerCheck) Run() error {
 		return err
 	}
 
-	return c.processor.Run(sender, cacheValidity)
+	return c.processor.Run(sender, c.cacheValidity)
 }
