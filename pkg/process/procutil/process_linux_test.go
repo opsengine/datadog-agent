@@ -1608,6 +1608,29 @@ func resetNiceValues(procs map[int32]*Process) {
 	}
 }
 
+// BenchmarkProcessesByPID_NoCache measures steady-state collection without caching:
+// every call reads cmdline, comm, and exe from disk for all processes.
+func BenchmarkProcessesByPID_NoCache(b *testing.B) {
+	probe := getProbe(WithProcFSRoot("resources/test_procfs/proc/"))
+	defer probe.Close()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = probe.ProcessesByPID(time.Now(), true)
+	}
+}
+
+// BenchmarkProcessesByPID_WithCache measures steady-state collection with static data caching:
+// cmdline, comm, and exe are served from cache for stable processes; only dynamic data is read.
+func BenchmarkProcessesByPID_WithCache(b *testing.B) {
+	probe := getProbe(WithProcFSRoot("resources/test_procfs/proc/"), WithStaticDataCaching(true))
+	defer probe.Close()
+	_, _ = probe.ProcessesByPID(time.Now(), true) // populate cache
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = probe.ProcessesByPID(time.Now(), true)
+	}
+}
+
 func BenchmarkGetFDCount(b *testing.B) {
 	probe := getProbe()
 	defer probe.Close()

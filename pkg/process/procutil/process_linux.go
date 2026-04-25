@@ -122,6 +122,27 @@ func WithBootTimeRefreshInterval(bootTimeRefreshInterval time.Duration) Option {
 	}
 }
 
+// WithStaticDataCaching enables caching of static per-process data (cmdline, comm, exe) that
+// is stable for the lifetime of a process instance, keyed by (pid, createTime).
+func WithStaticDataCaching(enabled bool) Option {
+	return func(p Probe) {
+		if linuxProbe, ok := p.(*probe); ok {
+			linuxProbe.enableStaticDataCaching = enabled
+			if enabled && linuxProbe.staticDataCache == nil {
+				linuxProbe.staticDataCache = make(map[int32]*processStaticData)
+			}
+		}
+	}
+}
+
+// processStaticData holds per-process fields that don't change during the lifetime of a process instance.
+type processStaticData struct {
+	createTime int64
+	cmdline    []string
+	comm       string
+	exe        string
+}
+
 // probe is a service that fetches process related info on current host
 type probe struct {
 	bootTime     *atomic.Uint64
@@ -137,6 +158,11 @@ type probe struct {
 	returnZeroPermStats     bool
 	bootTimeRefreshInterval time.Duration
 	ignoreZombieProcesses   bool
+
+	// staticDataCache is not protected by a mutex: ProcessesByPID is expected to be called
+	// from a single goroutine (the check runner serializes calls per check instance).
+	enableStaticDataCaching bool
+	staticDataCache         map[int32]*processStaticData
 }
 
 // NewProcessProbe initializes a new Probe object
@@ -250,10 +276,34 @@ func (p *probe) ProcessesByPID(now time.Time, collectStats bool) (map[int32]*Pro
 			continue
 		}
 
-		cmdline := p.getCmdline(pathForPID)
-		comm := p.getCommandName(pathForPID)
-		statusInfo := p.parseStatus(pathForPID)
+		// parseStat first so createTime is available as a cache key
 		statInfo := p.parseStat(pathForPID, pid, now)
+
+		var cmdline []string
+		var comm, exe string
+		if p.enableStaticDataCaching {
+			if cached, ok := p.staticDataCache[pid]; ok && cached.createTime == statInfo.createTime {
+				cmdline = cached.cmdline
+				comm = cached.comm
+				exe = cached.exe
+			} else {
+				cmdline = p.getCmdline(pathForPID)
+				comm = p.getCommandName(pathForPID)
+				exe = p.getLinkWithAuthCheck(pathForPID, "exe")
+				p.staticDataCache[pid] = &processStaticData{
+					createTime: statInfo.createTime,
+					cmdline:    cmdline,
+					comm:       comm,
+					exe:        exe,
+				}
+			}
+		} else {
+			cmdline = p.getCmdline(pathForPID)
+			comm = p.getCommandName(pathForPID)
+			exe = p.getLinkWithAuthCheck(pathForPID, "exe")
+		}
+
+		statusInfo := p.parseStatus(pathForPID)
 
 		if len(cmdline) == 0 {
 			if isKernelThread(statInfo.flags) {
@@ -287,7 +337,7 @@ func (p *probe) ProcessesByPID(now time.Time, collectStats bool) (map[int32]*Pro
 			Uids:    statusInfo.uids,                           // /proc/[pid]/status
 			Gids:    statusInfo.gids,                           // /proc/[pid]/status
 			Cwd:     p.getLinkWithAuthCheck(pathForPID, "cwd"), // /proc/[pid]/cwd, requires permission checks
-			Exe:     p.getLinkWithAuthCheck(pathForPID, "exe"), // /proc/[pid]/exe, requires permission checks
+			Exe:     exe,                                        // /proc/[pid]/exe, requires permission checks
 			NsPid:   statusInfo.nspid,                          // /proc/[pid]/status
 			Stats: &Stats{
 				CreateTime:  statInfo.createTime,       // /proc/[pid]/stat
@@ -312,6 +362,18 @@ func (p *probe) ProcessesByPID(now time.Time, collectStats bool) (map[int32]*Pro
 			} // use -1 values to represent "no permission"
 		}
 		procsByPID[pid] = proc
+	}
+
+	if p.enableStaticDataCaching && len(p.staticDataCache) > 0 {
+		activePIDs := make(map[int32]struct{}, len(pids))
+		for _, pid := range pids {
+			activePIDs[pid] = struct{}{}
+		}
+		for pid := range p.staticDataCache {
+			if _, ok := activePIDs[pid]; !ok {
+				delete(p.staticDataCache, pid)
+			}
+		}
 	}
 
 	return procsByPID, nil

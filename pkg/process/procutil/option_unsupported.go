@@ -30,3 +30,9 @@ func WithBootTimeRefreshInterval(_ time.Duration) Option {
 func WithIgnoreZombieProcesses(_ bool) Option {
 	return func(_ Probe) {}
 }
+
+// WithStaticDataCaching enables caching of static per-process data (cmdline, comm, exe).
+// No-op on non-Linux platforms.
+func WithStaticDataCaching(_ bool) Option {
+	return func(_ Probe) {}
+}

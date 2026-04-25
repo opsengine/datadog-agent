@@ -150,7 +150,8 @@ func (p *ProcessCheck) Init(syscfg *SysProbeConfig, info *HostInfo, oneShot bool
 	p.sysProbeConfig = syscfg
 	p.probe = newProcessProbe(p.config,
 		procutil.WithPermission(syscfg.ProcessModuleEnabled),
-		procutil.WithIgnoreZombieProcesses(p.config.GetBool(configIgnoreZombies)))
+		procutil.WithIgnoreZombieProcesses(p.config.GetBool(configIgnoreZombies)),
+		procutil.WithStaticDataCaching(true))
 	sharedContainerProvider, err := proccontainers.GetSharedContainerProvider()
 	if err != nil {
 		return err
