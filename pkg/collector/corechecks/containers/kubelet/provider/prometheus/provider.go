@@ -41,7 +41,7 @@ const (
 var (
 	// ParseMetricsWithFilterFunc allows us to override the function used for parsing the prometheus metrics. It should
 	// only be overridden for testing purposes.
-	ParseMetricsWithFilterFunc = prometheus.ParseMetricsWithFilter
+	ParseMetricsWithFilterFunc func([]byte, []string, map[string]struct{}) ([]prometheus.MetricFamily, error) = prometheus.ParseMetricsWithFilter
 )
 
 // TransformerFunc outlines the function signature for any transformers which will be used with the prometheus Provider
@@ -63,6 +63,7 @@ type Provider struct {
 	wildcardRegex       *regexp.Regexp
 	ignoredMetrics      map[string]bool
 	ignoredMetricsRegex *regexp.Regexp
+	metricWhitelist     map[string]struct{} // nil when wildcard metrics are configured
 }
 
 // ScraperConfig contains the configuration of the Prometheus scraper.
@@ -144,6 +145,19 @@ func NewProvider(config *common.KubeletConfig, transformers Transformers, scrape
 	// Rename bucket "le" label to "upper_bound"
 	config.LabelsMapper["le"] = "upper_bound"
 
+	// Build a whitelist of metric family names to pass to the text parser.
+	// When wildcardRegex is set we cannot enumerate all matching names upfront, so we disable the whitelist.
+	var metricWhitelist map[string]struct{}
+	if wildcardRegex == nil {
+		metricWhitelist = make(map[string]struct{}, len(metricMappings)+len(transformers))
+		for k := range metricMappings {
+			metricWhitelist[k] = struct{}{}
+		}
+		for k := range transformers {
+			metricWhitelist[k] = struct{}{}
+		}
+	}
+
 	return Provider{
 		Config:              config,
 		ScraperConfig:       scraperConfig,
@@ -152,6 +166,7 @@ func NewProvider(config *common.KubeletConfig, transformers Transformers, scrape
 		wildcardRegex:       wildcardRegex,
 		ignoredMetrics:      ignoredMetrics,
 		ignoredMetricsRegex: ignoredRegex,
+		metricWhitelist:     metricWhitelist,
 	}, nil
 }
 
@@ -178,7 +193,7 @@ func (p *Provider) Provide(kc kubelet.KubeUtilInterface, sender sender.Sender) e
 		return nil
 	}
 
-	metrics, err := ParseMetricsWithFilterFunc(data, p.ScraperConfig.TextFilterBlacklist)
+	metrics, err := ParseMetricsWithFilterFunc(data, p.ScraperConfig.TextFilterBlacklist, p.metricWhitelist)
 	if err != nil {
 		return err
 	}

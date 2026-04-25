@@ -47,7 +47,7 @@ container_memory_usage_bytes{pod="",container="empty"} 500
 container_memory_usage_bytes{pod="other-pod",container="sidecar"} 750`
 
 	t.Run("filter pod_name empty", func(t *testing.T) {
-		metrics, err := ParseMetricsWithFilter([]byte(testData), []string{`pod_name=""`})
+		metrics, err := ParseMetricsWithFilter([]byte(testData), []string{`pod_name=""`}, nil)
 		require.NoError(t, err)
 
 		cpuFamily := findFamily(metrics, "container_cpu_usage_seconds_total")
@@ -56,7 +56,7 @@ container_memory_usage_bytes{pod="other-pod",container="sidecar"} 750`
 	})
 
 	t.Run("filter pod empty", func(t *testing.T) {
-		metrics, err := ParseMetricsWithFilter([]byte(testData), []string{`pod=""`})
+		metrics, err := ParseMetricsWithFilter([]byte(testData), []string{`pod=""`}, nil)
 		require.NoError(t, err)
 
 		memFamily := findFamily(metrics, "container_memory_usage_bytes")
@@ -65,7 +65,7 @@ container_memory_usage_bytes{pod="other-pod",container="sidecar"} 750`
 	})
 
 	t.Run("filter both empty labels", func(t *testing.T) {
-		metrics, err := ParseMetricsWithFilter([]byte(testData), []string{`pod_name=""`, `pod=""`})
+		metrics, err := ParseMetricsWithFilter([]byte(testData), []string{`pod_name=""`, `pod=""`}, nil)
 		require.NoError(t, err)
 
 		cpuFamily := findFamily(metrics, "container_cpu_usage_seconds_total")
@@ -78,12 +78,66 @@ container_memory_usage_bytes{pod="other-pod",container="sidecar"} 750`
 	})
 
 	t.Run("no filter", func(t *testing.T) {
-		metrics, err := ParseMetricsWithFilter([]byte(testData), nil)
+		metrics, err := ParseMetricsWithFilter([]byte(testData), nil, nil)
 		require.NoError(t, err)
 
 		cpuFamily := findFamily(metrics, "container_cpu_usage_seconds_total")
 		require.NotNil(t, cpuFamily)
 		assert.Len(t, cpuFamily.Samples, 3, "should have all 3 samples with no filter")
+	})
+}
+
+func TestParseMetricsWithWhitelist(t *testing.T) {
+	testData := `# TYPE container_cpu_usage_seconds_total counter
+container_cpu_usage_seconds_total{pod="pod-1"} 100
+container_cpu_usage_seconds_total{pod="pod-2"} 200
+# TYPE container_memory_usage_bytes gauge
+container_memory_usage_bytes{pod="pod-1"} 1000
+# TYPE container_network_rx_bytes counter
+container_network_rx_bytes{pod="pod-1"} 500`
+
+	t.Run("whitelist includes one family", func(t *testing.T) {
+		whitelist := map[string]struct{}{"container_cpu_usage_seconds_total": {}}
+		metrics, err := ParseMetricsWithFilter([]byte(testData), nil, whitelist)
+		require.NoError(t, err)
+
+		assert.Len(t, metrics, 1)
+		assert.Equal(t, "container_cpu_usage_seconds_total", metrics[0].Name)
+		assert.Len(t, metrics[0].Samples, 2)
+		assert.Nil(t, findFamily(metrics, "container_memory_usage_bytes"), "non-whitelisted family must be absent")
+		assert.Nil(t, findFamily(metrics, "container_network_rx_bytes"), "non-whitelisted family must be absent")
+	})
+
+	t.Run("whitelist includes multiple families", func(t *testing.T) {
+		whitelist := map[string]struct{}{
+			"container_cpu_usage_seconds_total": {},
+			"container_network_rx_bytes":        {},
+		}
+		metrics, err := ParseMetricsWithFilter([]byte(testData), nil, whitelist)
+		require.NoError(t, err)
+
+		assert.Len(t, metrics, 2)
+		assert.NotNil(t, findFamily(metrics, "container_cpu_usage_seconds_total"))
+		assert.NotNil(t, findFamily(metrics, "container_network_rx_bytes"))
+		assert.Nil(t, findFamily(metrics, "container_memory_usage_bytes"), "non-whitelisted family must be absent")
+	})
+
+	t.Run("empty whitelist returns no families", func(t *testing.T) {
+		whitelist := map[string]struct{}{}
+		metrics, err := ParseMetricsWithFilter([]byte(testData), nil, whitelist)
+		require.NoError(t, err)
+		assert.Empty(t, metrics)
+	})
+
+	t.Run("whitelist and blacklist filter combine", func(t *testing.T) {
+		whitelist := map[string]struct{}{"container_cpu_usage_seconds_total": {}}
+		// blacklist filters out samples with pod="pod-2"
+		metrics, err := ParseMetricsWithFilter([]byte(testData), []string{`pod="pod-2"`}, whitelist)
+		require.NoError(t, err)
+
+		cpuFamily := findFamily(metrics, "container_cpu_usage_seconds_total")
+		require.NotNil(t, cpuFamily)
+		assert.Len(t, cpuFamily.Samples, 1, "pod-2 sample should be removed by blacklist")
 	})
 }
 
@@ -281,7 +335,7 @@ func BenchmarkParseMetricsWithFilter(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for b.Loop() {
-		metrics, err = ParseMetricsWithFilter(data, filter)
+		metrics, err = ParseMetricsWithFilter(data, filter, nil)
 	}
 	b.StopTimer()
 
@@ -309,6 +363,63 @@ container_cpu_usage_seconds_total{pod="pod-3",container="c3"} 300`)
 	require.NoError(b, err)
 	require.Len(b, metrics, 1)
 	assert.Len(b, metrics[0].Samples, 3)
+}
+
+// generateKubeletLikeData generates a prometheus text payload that resembles a real kubelet /metrics
+// endpoint: totalFamilies metric families each with samplesPerFamily samples, of which wantedFamilies
+// are "interesting" (present in the whitelist).
+func generateKubeletLikeData(totalFamilies, samplesPerFamily, wantedFamilies int) (data []byte, whitelist map[string]struct{}) {
+	whitelist = make(map[string]struct{}, wantedFamilies)
+	var sb strings.Builder
+	for i := range totalFamilies {
+		name := fmt.Sprintf("kubelet_metric_%04d", i)
+		sb.WriteString("# HELP " + name + " some help text\n")
+		sb.WriteString("# TYPE " + name + " gauge\n")
+		for j := range samplesPerFamily {
+			fmt.Fprintf(&sb, "%s{pod=\"pod-%d\",container=\"c%d\"} %d\n", name, j%10, j%5, j*100)
+		}
+		if i < wantedFamilies {
+			whitelist[name] = struct{}{}
+		}
+	}
+	return []byte(sb.String()), whitelist
+}
+
+// BenchmarkParseMetrics_NoWhitelist is the "before" scenario: parse all metric families in a
+// kubelet-like response (500 families, 5 samples each) with no whitelist — every family is allocated.
+func BenchmarkParseMetrics_NoWhitelist(b *testing.B) {
+	var metrics []MetricFamily
+	var err error
+	data, _ := generateKubeletLikeData(500, 5, 37)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		metrics, err = ParseMetricsWithFilter(data, nil, nil)
+	}
+	b.StopTimer()
+
+	require.NoError(b, err)
+	_ = metrics
+}
+
+// BenchmarkParseMetrics_WithWhitelist is the "after" scenario: same payload, but only 37 families
+// are whitelisted — the other 463 families are skipped before any allocation.
+func BenchmarkParseMetrics_WithWhitelist(b *testing.B) {
+	var metrics []MetricFamily
+	var err error
+	data, whitelist := generateKubeletLikeData(500, 5, 37)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		metrics, err = ParseMetricsWithFilter(data, nil, whitelist)
+	}
+	b.StopTimer()
+
+	require.NoError(b, err)
+	require.Len(b, metrics, 37)
+	_ = metrics
 }
 
 func generateLargeMetricsData() []byte {

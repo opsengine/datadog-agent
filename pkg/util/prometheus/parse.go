@@ -78,8 +78,9 @@ func preprocessData(data []byte, filter []string) []byte {
 }
 
 // ParseMetricsWithFilter parses prometheus-formatted metrics from the input data, ignoring lines which contain
-// text that matches the passed in filter.
-func ParseMetricsWithFilter(data []byte, filter []string) ([]MetricFamily, error) {
+// text that matches the passed in filter. If whitelist is non-nil, only metric families whose name appears in
+// the set are parsed; all others are skipped before any allocation occurs.
+func ParseMetricsWithFilter(data []byte, filter []string, whitelist map[string]struct{}) ([]MetricFamily, error) {
 	data = preprocessData(data, filter)
 
 	st := labels.NewSymbolTable()
@@ -87,6 +88,7 @@ func ParseMetricsWithFilter(data []byte, filter []string) ([]MetricFamily, error
 
 	var result []MetricFamily
 	var lbls labels.Labels
+	skipFamily := false
 
 	for {
 		entry, err := parser.Next()
@@ -99,18 +101,34 @@ func ParseMetricsWithFilter(data []byte, filter []string) ([]MetricFamily, error
 
 		switch entry {
 		case textparse.EntryType:
+			name, typ := parser.Type()
+			familyName := string(name)
+
+			if whitelist != nil {
+				_, ok := whitelist[familyName]
+				skipFamily = !ok
+				if skipFamily {
+					continue
+				}
+			} else {
+				skipFamily = false
+			}
+
 			// Discard previous family if it has no samples
 			if len(result) > 0 && len(result[len(result)-1].Samples) == 0 {
 				result = result[:len(result)-1]
 			}
-			name, typ := parser.Type()
 			result = append(result, MetricFamily{
-				Name:    string(name),
+				Name:    familyName,
 				Type:    strings.ToUpper(string(typ)),
 				Samples: make([]Sample, 0, 8),
 			})
 
 		case textparse.EntrySeries:
+			if skipFamily {
+				continue
+			}
+
 			_, ts, value := parser.Series()
 			parser.Labels(&lbls)
 
@@ -131,6 +149,13 @@ func ParseMetricsWithFilter(data []byte, filter []string) ([]MetricFamily, error
 
 				// If still no match, create a new UNTYPED family
 				if len(result) == 0 || result[len(result)-1].Name != name {
+					// Check whitelist for UNTYPED families (no prior # TYPE line)
+					if whitelist != nil {
+						if _, ok := whitelist[name]; !ok {
+							skipFamily = true
+							continue
+						}
+					}
 					// Discard previous family if it has no samples
 					if len(result) > 0 && len(result[len(result)-1].Samples) == 0 {
 						result = result[:len(result)-1]
@@ -172,5 +197,5 @@ func ParseMetricsWithFilter(data []byte, filter []string) ([]MetricFamily, error
 
 // ParseMetrics parses prometheus-formatted metrics from the input data.
 func ParseMetrics(data []byte) ([]MetricFamily, error) {
-	return ParseMetricsWithFilter(data, nil)
+	return ParseMetricsWithFilter(data, nil, nil)
 }
