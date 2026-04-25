@@ -48,8 +48,6 @@ import (
 const (
 	// pidCacheTTL is the time to live for the PID cache
 	pidCacheTTL = 1 * time.Second
-	// inodeCacheTTL is the time to live for the inode cache
-	inodeCacheTTL = 1 * time.Second
 	// externalDataCacheTTL is the time to live for the external data cache
 	externalDataCacheTTL = 1 * time.Second
 )
@@ -61,6 +59,7 @@ type datadogConfig struct {
 	dogstatsdEntityIDPrecedenceEnabled bool                 // Disable Origin Detection for DogStatsD metrics when EntityID is set.
 	dogstatsdOptOutEnabled             bool                 // Disable Origin Detection if enabled and cardinality is none.
 	originDetectionUnifiedEnabled      bool                 // Unifies Origin Detection mechanisms to use the same logic.
+	inodeCacheTTL                      time.Duration        // TTL for the inode→containerID cache used by origin detection.
 }
 
 // Tagger is the entry class for entity tagging. It holds the tagger collector,
@@ -159,6 +158,7 @@ func newLocalTagger(cfg config.Component, wmeta workloadmeta.Component, log log.
 	dc.dogstatsdEntityIDPrecedenceEnabled = cfg.GetBool("dogstatsd_entity_id_precedence")
 	dc.originDetectionUnifiedEnabled = cfg.GetBool("origin_detection_unified")
 	dc.dogstatsdOptOutEnabled = cfg.GetBool("dogstatsd_origin_optout_enabled")
+	dc.inodeCacheTTL = cfg.GetDuration("dogstatsd_inode_cache_ttl")
 
 	checksTagCardinalityRawConfig := cfg.GetString("checks_tag_cardinality")
 	dogstatsdTagCardinalityRawConfig := cfg.GetString("dogstatsd_tag_cardinality")
@@ -295,7 +295,7 @@ func (t *localTagger) GenerateContainerIDFromOriginInfo(originInfo origindetecti
 	// If the inode is known, do an inode resolution.
 	if originInfo.LocalData.Inode != 0 {
 		t.log.Debugf("Resolving container ID from inode: %d", originInfo.LocalData.Inode)
-		containerID, err = metaCollector.GetContainerIDForInode(originInfo.LocalData.Inode, inodeCacheTTL)
+		containerID, err = metaCollector.GetContainerIDForInode(originInfo.LocalData.Inode, t.datadogConfig.inodeCacheTTL)
 		if err != nil {
 			t.log.Debugf("Error resolving container ID from inode: %v", err)
 		} else if containerID == "" {
@@ -546,7 +546,7 @@ func (t *localTagger) EnrichTags(tb tagset.TagsAccumulator, originInfo taggertyp
 
 // generateContainerIDFromInode generates a container ID from the CGroup inode.
 func (t *localTagger) generateContainerIDFromInode(e origindetection.LocalData, metricsProvider provider.ContainerIDForInodeRetriever) (string, error) {
-	return metricsProvider.GetContainerIDForInode(e.Inode, time.Second)
+	return metricsProvider.GetContainerIDForInode(e.Inode, t.datadogConfig.inodeCacheTTL)
 }
 
 // generateContainerIDFromExternalData generates a container ID from the External Data.
